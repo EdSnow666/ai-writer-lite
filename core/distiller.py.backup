@@ -1,0 +1,252 @@
+# 职责：写作偏好萃取和管理（支持修改过程萃取和定稿萃取）
+# 依赖内部：db.py, revision_manager.py, feedback_distiller.py, config.py
+# 依赖外部：anthropic, os, uuid, json
+# 暴露：should_trigger(), distill_preferences(), distill_modification_process(), distill_final_versions(), update_system_prompt()
+
+import os
+import uuid
+import json
+from anthropic import Anthropic
+from .db import get_conn
+from .revision_manager import get_revision_process_data, get_final_versions, get_undistilled_finals
+from .feedback_distiller import get_feedback_patterns, distill_user_feedback
+from config import API_CONFIG
+
+def should_trigger(undistilled_count, distilled_count):
+    """判断是否触发萃取"""
+    if distilled_count == 0 and undistilled_count >= 3:
+        return True
+    return undistilled_count >= 10
+
+def should_trigger_process_distill(process_count):
+    """判断是否触发修改过程萃取"""
+    return process_count >= 5
+
+def should_trigger_final_distill(final_count):
+    """判断是否触发定稿萃取"""
+    return final_count >= 10
+
+def distill_preferences(edit_records):
+    """萃取用户写作偏好（基于编辑记录）"""
+    api_key = os.getenv('ANTHROPIC_API_KEY')
+    if not api_key:
+        print("💡 提示：配置 ANTHROPIC_API_KEY 可启用自动偏好萃取")
+        return None
+
+    edits_text = '\n\n'.join([
+        f"修改 {i+1}:\n原文：{e['ai_original'][:100]}...\n改后：{e['final_text'][:100]}..."
+        for i, e in enumerate(edit_records)
+    ])
+
+    prompt = f"""分析以下编辑记录，提取用户的写作偏好：
+
+{edits_text}
+
+请总结：
+1. 句式偏好
+2. 措辞倾向
+3. 常见修改类型
+4. 禁忌表达
+
+输出格式：简洁的偏好描述（200 字内）"""
+
+    client = Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=API_CONFIG['model'],
+        max_tokens=API_CONFIG['max_tokens']['distill_writing'],
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response.content[0].text
+
+def distill_modification_process(process_records):
+    """
+    萃取修改过程偏好
+    分析用户如何一步步修改，提取动态写作优化策略
+    """
+    api_key = os.getenv('ANTHROPIC_API_KEY')
+    if not api_key:
+        return None
+
+    # 构建过程数据
+    process_text = '\n\n'.join([
+        f"会话 {i+1}:\n" + '\n'.join([
+            f"  第{r['round_num']}轮：编辑比例{r['edit_ratio']:.2f}, 类型={r['modification_type'] or '整体修改'}"
+            for r in records
+        ])
+        for i, records in enumerate(process_records)
+    ])
+
+    prompt = f"""分析以下用户的修改过程记录，提取动态写作优化策略：
+
+{process_text}
+
+请分析：
+1. 用户通常在第几轮修改后定稿
+2. 用户最常修改的内容类型（句式/措辞/结构）
+3. 编辑比例的变化趋势
+4. 用户的修改习惯模式
+
+输出格式：简洁的策略描述（300 字内），用于指导 AI 在动态修改中更好地响应用户需求"""
+
+    client = Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=API_CONFIG['model'],
+        max_tokens=API_CONFIG['max_tokens']['distill_modification'],
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response.content[0].text
+
+def distill_final_versions(final_versions):
+    """
+    萃取消稿特征
+    分析用户定稿的共同特征，提取"什么是用户满意的稿子"
+    """
+    api_key = os.getenv('ANTHROPIC_API_KEY')
+    if not api_key:
+        return None
+
+    # 抽样展示（避免 token 超限）
+    samples = final_versions[:10]
+    finals_text = '\n\n'.join([
+        f"定稿 {i+1} (经过{s['total_rounds']}轮修改，{s['word_count']}字):\n{s['final_text'][:200]}..."
+        for i, s in enumerate(samples)
+    ])
+
+    prompt = f"""分析以下用户定稿文本，提取定稿特征：
+
+{finals_text}
+
+请分析：
+1. 定稿文本的共同特征
+2. 用户满意的标准是什么
+3. 文风特点
+4. 常用表达模式
+
+输出格式：简洁的定稿特征描述（300 字内），用于指导 AI 生成更符合用户期望的初稿"""
+
+    client = Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=API_CONFIG['model'],
+        max_tokens=API_CONFIG['max_tokens']['distill_final'],
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response.content[0].text
+
+def distill_scenario_preferences(edit_records, scenario_type):
+    """
+    萃取特定场景的写作偏好
+    基于该场景下的编辑记录提取偏好
+    """
+    api_key = os.getenv('ANTHROPIC_API_KEY')
+    if not api_key:
+        return None
+
+    edits_text = '\n\n'.join([
+        f"修改 {i+1}:\n原文：{e['ai_original'][:100]}...\n改后：{e['final_text'][:100]}..."
+        for i, e in enumerate(edit_records)
+    ])
+
+    prompt = f"""分析以下{scenario_type}场景的编辑记录，提取用户在该场景下的写作偏好：
+
+{edits_text}
+
+请总结：
+1. 句式偏好
+2. 措辞倾向
+3. 常见修改类型
+4. 禁忌表达
+
+输出格式：简洁的偏好描述（200 字内）"""
+
+    client = Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=API_CONFIG['model'],
+        max_tokens=API_CONFIG['max_tokens']['distill_scenario'],
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response.content[0].text
+
+def update_system_prompt(preferences, version=None, prompt_type='writing', scenario_type=None):
+    """更新并激活新的偏好模型"""
+    if version is None:
+        conn = get_conn()
+        if scenario_type:
+            # 场景偏好使用 scenario_preferences 表
+            cursor = conn.execute('SELECT MAX(version) FROM scenario_preferences WHERE scenario_type = ?', (scenario_type,))
+        else:
+            # 通用偏好使用 writing_preferences 表
+            cursor = conn.execute('SELECT MAX(version) FROM writing_preferences WHERE prompt_type = ?', (prompt_type,))
+        max_ver = cursor.fetchone()[0]
+        version = (max_ver or 0) + 1
+        conn.close()
+
+    pref_id = f"pref-{uuid.uuid4().hex[:8]}"
+
+    if scenario_type:
+        # 场景偏好
+        system_prompt = f"你是一个专业的写作助手。{scenario_type}场景偏好：{preferences}"
+        conn = get_conn()
+        conn.execute('UPDATE scenario_preferences SET is_active = 0 WHERE scenario_type = ?', (scenario_type,))
+        conn.execute(
+            '''INSERT INTO scenario_preferences (id, scenario_type, version, preference_summary, system_prompt, is_active)
+               VALUES (?, ?, ?, ?, ?, 1)''',
+            (pref_id, scenario_type, version, preferences, system_prompt)
+        )
+    else:
+        # 通用偏好
+        if prompt_type == 'modification':
+            system_prompt = f"你是一个专业的写作助手。用户的动态修改偏好：{preferences}"
+        elif prompt_type == 'final':
+            system_prompt = f"你是一个专业的写作助手。用户的定稿特征：{preferences}"
+        else:
+            system_prompt = f"你是一个专业的写作助手。用户的写作偏好：{preferences}"
+
+        conn = get_conn()
+        conn.execute('UPDATE writing_preferences SET is_active = 0 WHERE prompt_type = ?', (prompt_type,))
+        conn.execute(
+            '''INSERT INTO writing_preferences (id, version, preference_summary, system_prompt, is_active, prompt_type)
+               VALUES (?, ?, ?, ?, 1, ?)''',
+            (pref_id, version, preferences, system_prompt, prompt_type)
+        )
+
+    conn.commit()
+    conn.close()
+    return pref_id
+
+def get_active_prompt(prompt_type='writing', scenario_type=None):
+    """获取当前激活的偏好提示（合并用户反馈规则）"""
+    conn = get_conn()
+    if scenario_type:
+        # 场景偏好从 scenario_preferences 表获取
+        cursor = conn.execute(
+            'SELECT system_prompt FROM scenario_preferences WHERE is_active = 1 AND scenario_type = ?',
+            (scenario_type,)
+        )
+    else:
+        # 通用偏好从 writing_preferences 表获取
+        cursor = conn.execute(
+            'SELECT system_prompt FROM writing_preferences WHERE is_active = 1 AND prompt_type = ?',
+            (prompt_type,)
+        )
+    row = cursor.fetchone()
+    conn.close()
+
+    base_prompt = row[0] if row else None
+
+    # 获取用户反馈规则
+    feedback_data = get_feedback_patterns(limit_sessions=5)
+    feedback_rules = feedback_data.get('rules', [])
+
+    # 合并反馈规则
+    if base_prompt and feedback_rules:
+        rules_text = '\n'.join([f"- {rule}" for rule in feedback_rules])
+        return f"{base_prompt}\n\n【用户反馈学习】\n根据历史反馈，请避免以下问题：\n{rules_text}"
+    elif feedback_rules:
+        rules_text = '\n'.join([f"- {rule}" for rule in feedback_rules])
+        return f"你是一个专业的写作助手。\n\n【用户反馈学习】\n根据历史反馈，请避免以下问题：\n{rules_text}"
+
+    return base_prompt
