@@ -162,7 +162,9 @@ def generate_revision_opinion(text, scenario_type=None, writing_purpose=None):
 - problem 字段：用自然的口语化表达，站在读者角度说"这里读起来..."，不要用"type:"等标签
 - advice 字段：给出具体可操作的修改建议
 - anchor 字段：标注问题所在的段落位置（如"段落 1"、"段落 2-3"、"全文"）
-- 每条建议 50 字以内"""
+- 每条建议 50 字以内
+
+**重要**：必须严格输出 JSON 格式，不要添加任何解释文字，直接输出 JSON 对象。"""
 
     return f"__ASSISTANT_MODE__\nSYSTEM: {system_prompt}\nUSER: {prompt}", [], ""
 
