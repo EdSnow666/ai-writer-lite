@@ -1,0 +1,7 @@
+2026-04-03 15:59:38,200 [ERROR] EOFError: 非交互环境下无法读取输入
+2026-04-03 16:01:19,163 [ERROR] EOFError: 非交互环境下无法读取输入
+2026-04-03 16:02:04,566 [INFO] open_draft: 尝试打开文件 C:\Users\Edward Snow/.claude/skills/ai-writer-lite/drafts\draft_b9fa8252.md
+2026-04-03 16:02:05,035 [INFO] 文件已打开：C:\Users\Edward Snow/.claude/skills/ai-writer-lite/drafts\draft_b9fa8252.md
+2026-04-03 16:11:53,814 [ERROR] EOFError: 非交互环境下无法读取输入
+2026-04-03 16:12:21,003 [INFO] open_draft: 尝试打开文件 C:\Users\Edward Snow/.claude/skills/ai-writer-lite/drafts\draft_0b8cfae1.md
+2026-04-03 16:12:21,260 [INFO] 文件已打开：C:\Users\Edward Snow/.claude/skills/ai-writer-lite/drafts\draft_0b8cfae1.md

@@ -1,0 +1,14 @@
+ID: mat-84cf666b
+source_type: structured
+book_title: 测试书名_2026
+page_number: 42
+tags: 测试标签, 重要
+status: ARCHIVED
+highlights: 这是高亮内容
+ocr_text: 这是正文内容，用于测试结构化解析是否正常工作。
+content:
+【高亮】
+这是高亮内容
+
+【正文】
+这是正文内容，用于测试结构化解析是否正常工作。

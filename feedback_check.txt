@@ -1,0 +1,136 @@
+Round 1: 结构
+  responded: 0
+  feedback count: 1
+    1. responded=None, feedback=""
+
+Round 2: 表达
+  responded: 0
+  feedback count: 1
+    1. responded=None, feedback=""
+
+Round 3: 论据
+  responded: 0
+  feedback count: 1
+    1. responded=None, feedback=""
+
+Round 4: 表达
+  responded: 1
+  feedback count: 1
+    1. responded=None, feedback=""
+
+Round 5: 精炼
+  responded: 1
+  feedback count: 1
+    1. responded=None, feedback=""
+
+Round 6: 结构
+  responded: 1
+  feedback count: 1
+    1. responded=None, feedback=""
+
+Round 7: 打磨建议
+  responded: 1
+  feedback count: 6
+    1. responded=True, feedback=""
+    2. responded=True, feedback=""
+    3. responded=True, feedback=""
+    4. responded=True, feedback=""
+    5. responded=True, feedback=""
+    6. responded=True, feedback=""
+
+Round 8: 打磨建议
+  responded: 1
+  feedback count: 6
+    1. responded=True, feedback=""
+    2. responded=True, feedback=""
+    3. responded=True, feedback=""
+    4. responded=True, feedback=""
+    5. responded=True, feedback=""
+    6. responded=True, feedback=""
+
+Round 9: 打磨建议
+  responded: 1
+  feedback count: 5
+    1. responded=True, feedback=""
+    2. responded=True, feedback=""
+    3. responded=True, feedback=""
+    4. responded=True, feedback=""
+    5. responded=True, feedback=""
+
+Round 10: 打磨建议
+  responded: 1
+  feedback count: 5
+    1. responded=True, feedback=""
+    2. responded=True, feedback=""
+    3. responded=True, feedback=""
+    4. responded=True, feedback=""
+    5. responded=True, feedback=""
+
+Round 11: 打磨建议
+  responded: 1
+  feedback count: 5
+    1. responded=True, feedback=""
+    2. responded=True, feedback=""
+    3. responded=True, feedback=""
+    4. responded=True, feedback=""
+    5. responded=True, feedback=""
+
+Round 12: 打磨建议
+  responded: 0
+  feedback count: 5
+    1. responded=True, feedback=""
+    2. responded=True, feedback=""
+    3. responded=True, feedback=""
+    4. responded=True, feedback=""
+    5. responded=True, feedback=""
+
+Round 13: 打磨建议
+  responded: 0
+  feedback count: 5
+    1. responded=True, feedback=""
+    2. responded=True, feedback=""
+    3. responded=True, feedback=""
+    4. responded=True, feedback=""
+    5. responded=True, feedback=""
+
+Round 14: 打磨建议
+  responded: 0
+  feedback count: 5
+    1. responded=True, feedback=""
+    2. responded=True, feedback=""
+    3. responded=True, feedback=""
+    4. responded=True, feedback=""
+    5. responded=True, feedback=""
+
+Round 15: 打磨建议
+  responded: 0
+  feedback count: 5
+    1. responded=True, feedback=""
+    2. responded=True, feedback=""
+    3. responded=True, feedback=""
+    4. responded=True, feedback=""
+    5. responded=True, feedback=""
+
+Round 16: 打磨建议
+  responded: 0
+  feedback count: 5
+    1. responded=True, feedback=""
+    2. responded=True, feedback=""
+    3. responded=True, feedback=""
+    4. responded=True, feedback=""
+    5. responded=True, feedback=""
+
+Round 17: 打磨建议
+  responded: 0
+  feedback count: 3
+    1. responded=True, feedback=""
+    2. responded=True, feedback=""
+    3. responded=True, feedback=""
+
+Round 18: 打磨建议
+  responded: 0
+  feedback count: 3
+    1. responded=True, feedback=""
+    2. responded=False, feedback=""
+    3. responded=False, feedback=""
+

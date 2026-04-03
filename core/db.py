@@ -17,13 +17,23 @@ def init_db():
     conn.execute('PRAGMA synchronous=NORMAL;')
     conn.execute('PRAGMA foreign_keys=ON;')  # 启用外键约束
 
-    # materials 表
+    # materials 表 - 支持结构化素材字段（与 knowledge_graph Card 表对齐）
     conn.execute('''
         CREATE TABLE IF NOT EXISTS materials (
             id TEXT PRIMARY KEY,
             content TEXT NOT NULL,
             source_type TEXT,
             metadata TEXT,
+            note_id TEXT,
+            title TEXT,
+            book_title TEXT,
+            page_number INTEGER,
+            tags TEXT,
+            status TEXT,
+            highlights TEXT,
+            ocr_text TEXT,
+            original_summary TEXT,
+            review_notes TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -38,6 +48,7 @@ def init_db():
             final_text TEXT,
             scenario_type TEXT,
             writing_purpose TEXT,
+            ai_model TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             modified_at TIMESTAMP
         )
@@ -69,6 +80,42 @@ def init_db():
         conn.execute('ALTER TABLE edit_records ADD COLUMN suggestions_raw TEXT')
     except sqlite3.OperationalError:
         pass  # 字段已存在
+
+    # 为 summaries 表添加 ai_model 字段（如果不存在）
+    try:
+        conn.execute('ALTER TABLE summaries ADD COLUMN ai_model TEXT')
+    except sqlite3.OperationalError:
+        pass  # 字段已存在
+
+    # 为 materials 表添加结构化素材字段（迁移，与 Card 表对齐）
+    material_new_fields = [
+        ('note_id', 'TEXT'),
+        ('title', 'TEXT'),
+        ('book_title', 'TEXT'),
+        ('page_number', 'INTEGER'),
+        ('tags', 'TEXT'),
+        ('status', 'TEXT'),
+        ('highlights', 'TEXT'),
+        ('ocr_text', 'TEXT'),
+        ('original_summary', 'TEXT'),
+        ('review_notes', 'TEXT'),
+    ]
+    for field_name, field_type in material_new_fields:
+        try:
+            conn.execute(f'ALTER TABLE materials ADD COLUMN {field_name} {field_type}')
+        except sqlite3.OperationalError:
+            pass  # 字段已存在
+
+    # system_prompts 表 - 存储激活的偏好 prompt
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS system_prompts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prompt_type TEXT NOT NULL,
+            prompt_text TEXT,
+            is_active INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
 
     # writing_preferences 表
     conn.execute('''
@@ -201,6 +248,19 @@ def init_db():
         )
     ''')
 
+    # user_custom_prompts 表 - 用户自定义 prompt（支持历史版本）
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS user_custom_prompts (
+            id TEXT PRIMARY KEY,
+            scenario_type TEXT NOT NULL,
+            custom_prompt TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP,
+            FOREIGN KEY (scenario_type) REFERENCES writing_scenarios(id) ON DELETE CASCADE
+        )
+    ''')
+
     # 初始化默认写作场景
     default_scenarios = [
         ('academic', '学术论文', '学术写作场景，注重严谨性、引用规范、论证逻辑'),
@@ -235,6 +295,7 @@ def create_indexes(conn):
         'CREATE INDEX IF NOT EXISTS idx_sessions_summary ON modification_sessions(summary_id)',
         'CREATE INDEX IF NOT EXISTS idx_scenario_prefs_type ON scenario_preferences(scenario_type, is_active)',
         'CREATE INDEX IF NOT EXISTS idx_writing_prefs_active ON writing_preferences(is_active, prompt_type)',
+        'CREATE INDEX IF NOT EXISTS idx_custom_prompts_scenario ON user_custom_prompts(scenario_type, is_active, created_at)',
     ]
     for idx_sql in indexes:
         try:
@@ -256,8 +317,8 @@ def check_dependencies():
         import jieba
         return True
     except ImportError:
-        print("[提示] 建议安装 jieba 以获得更好的中文分词效果")
-        print("运行：pip install jieba")
+        pass  # 静默处理，不影响用户体验
+        return False
         return False
 
 def cleanup_expired_drafts(hours=24):

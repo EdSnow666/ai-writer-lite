@@ -227,12 +227,26 @@ def finalize_session(session_id, final_text):
 
         summary_id, total_rounds = row
 
-        # 获取最后一条 edit_record 的 ID
-        last_edit_id = mark_last_edit_as_final(session_id)
-        if not last_edit_id:
+        # 获取最后一条 edit_record 的 ID（内联逻辑避免死锁）
+        cursor = conn.execute('''
+            SELECT id FROM edit_records
+            WHERE session_id = ?
+            ORDER BY created_at DESC LIMIT 1
+        ''', (session_id,))
+        edit_row = cursor.fetchone()
+
+        if not edit_row:
             conn.rollback()
             conn.close()
             return None
+
+        last_edit_id = edit_row[0]
+
+        # 清除该 session 所有 is_final 标记
+        conn.execute('UPDATE edit_records SET is_final = 0 WHERE session_id = ?', (session_id,))
+
+        # 标记最后一条为 is_final=1
+        conn.execute('UPDATE edit_records SET is_final = 1 WHERE id = ?', (last_edit_id,))
 
         # 创建定稿记录（引用 edit_record，不存储冗余文本）
         final_id = f"final-{uuid.uuid4().hex[:8]}"

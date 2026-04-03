@@ -41,11 +41,19 @@ def analyze_feedback_pattern(feedbacks):
         'no_response': []    # 用户未回应的建议
     }
 
+    # 用于去重：记录已处理的问题
+    seen_problems = set()
+
     for feedback in feedbacks:
         for fb in feedback.get('user_feedback', []):
             user_text = fb.get('user_feedback', '')
             problem = fb.get('problem', '')
             advice = fb.get('advice', '')
+
+            # 去重：跳过已处理的问题
+            if problem in seen_problems:
+                continue
+            seen_problems.add(problem)
 
             if not user_text:
                 patterns['no_response'].append({
@@ -167,50 +175,53 @@ def get_feedback_patterns(limit_sessions=10):
     获取用户反馈模式数据，用于 Prompt 注入
     返回：{context: str, rules: list}
     """
-    records = get_feedback_records(limit=limit_sessions * 5)  # 每条 session 平均 5 条反馈
+    try:
+        records = get_feedback_records(limit=limit_sessions * 5)
 
-    if not records:
+        if not records:
+            return {'context': '', 'rules': []}
+
+        patterns = analyze_feedback_pattern(records)
+
+        # 生成上下文
+        context_parts = []
+
+        if patterns['rejected']:
+            context_parts.append("【用户拒绝的建议类型】")
+            for entry in patterns['rejected'][:3]:
+                context_parts.append(f"- 问题：{entry['problem']}")
+                context_parts.append(f"  AI 建议：{entry['advice']}")
+                context_parts.append(f"  用户反馈：{entry['feedback']}")
+
+        if patterns['accepted']:
+            context_parts.append("\n【用户接受的建议类型】")
+            for entry in patterns['accepted'][:3]:
+                context_parts.append(f"- 问题：{entry['problem']}")
+                context_parts.append(f"  AI 建议：{entry['advice']}")
+                context_parts.append(f"  用户反馈：{entry['feedback']}")
+
+        # 生成规则
+        rules = []
+
+        # 从拒绝反馈中提取规则
+        for entry in patterns['rejected']:
+            reason = entry.get('reason', '')
+            if '冗余' in reason or '多余' in reason or '重复' in reason:
+                rules.append("避免添加冗余的过渡句")
+            if '已知' in reason or '大家都知道' in reason:
+                rules.append("读者已知的信息不要重复解释")
+            if '新闻' in reason or '时事' in reason:
+                rules.append("时事新闻内容不要添加已知背景的过渡")
+
+        # 去重
+        rules = list(dict.fromkeys(rules))
+
+        return {
+            'context': '\n'.join(context_parts),
+            'rules': rules
+        }
+    except Exception:
         return {'context': '', 'rules': []}
-
-    patterns = analyze_feedback_pattern(records)
-
-    # 生成上下文
-    context_parts = []
-
-    if patterns['rejected']:
-        context_parts.append("【用户拒绝的建议类型】")
-        for entry in patterns['rejected'][:3]:
-            context_parts.append(f"- 问题：{entry['problem']}")
-            context_parts.append(f"  AI 建议：{entry['advice']}")
-            context_parts.append(f"  用户反馈：{entry['feedback']}")
-
-    if patterns['accepted']:
-        context_parts.append("\n【用户接受的建议类型】")
-        for entry in patterns['accepted'][:3]:
-            context_parts.append(f"- 问题：{entry['problem']}")
-            context_parts.append(f"  AI 建议：{entry['advice']}")
-            context_parts.append(f"  用户反馈：{entry['feedback']}")
-
-    # 生成规则
-    rules = []
-
-    # 从拒绝反馈中提取规则
-    for entry in patterns['rejected']:
-        reason = entry.get('reason', '')
-        if '冗余' in reason or '多余' in reason or '重复' in reason:
-            rules.append("避免添加冗余的过渡句")
-        if '已知' in reason or '大家都知道' in reason:
-            rules.append("读者已知的信息不要重复解释")
-        if '新闻' in reason or '时事' in reason:
-            rules.append("时事新闻内容不要添加已知背景的过渡")
-
-    # 去重
-    rules = list(dict.fromkeys(rules))
-
-    return {
-        'context': '\n'.join(context_parts),
-        'rules': rules
-    }
 
 
 def should_trigger_feedback_distill():

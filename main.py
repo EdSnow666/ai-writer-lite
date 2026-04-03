@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 # 职责：AI 写作助手主入口 - 支持对话式交互、动态修改、多轮修改记录
 # 依赖内部：core/*
-# 暴露：main(), run_interactive()
+# 暴露：main(), run_interactive(), prompt_custom_prompt_interaction()
+# 最后更新：2026-04-03
 
 import sys
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 import json
 import readline
+import re
 from core.db import init_db, check_dependencies, get_conn
 from core.input_parser import detect_and_import
 from core.generator import (
     generate_with_materials, generate_freeform, generate_revision,
     generate_revision_opinion, save_summary, get_active_preference, ask_if_finalized,
-    analyze_modification_type
+    analyze_modification_type, get_custom_prompt, save_custom_prompt, extract_ai_model
 )
 from core.temp_manager import create_draft, read_draft, delete_draft, open_draft, clean_suggestions
 from core.revision_manager import (
@@ -22,15 +27,15 @@ from core.revision_manager import (
 )
 from core.edit_records import save_edit_record, count_undistilled
 from core.distiller import (
-    should_trigger, distill_preferences, update_system_prompt,
-    should_trigger_final_distill, distill_final_versions
+    should_trigger_distill, distill_preferences, update_system_prompt,
+    should_trigger_final_distill, distill_from_final_versions
 )
 from core.session_state import WritingSession
 from config import EDIT_CONFIG
 import uuid
 
 def handle_assistant_mode(text, interactive=True):
-    """处理 Assistant 模式：当没有 API key 时，输出 prompt 让当前 AI 生成"""
+    """处理 Assistant 模式：输出 prompt 让当前 AI 生成"""
     if not text.startswith("__ASSISTANT_MODE__"):
         return text
 
@@ -40,11 +45,31 @@ def handle_assistant_mode(text, interactive=True):
     user_prompt = lines[2].replace("USER: ", "")
 
     if not interactive:
-        # 非交互模式：不输出任何内容，直接返回空字符串
-        # 外部 AI 无法在此模式下自动操作，需要用户手动调用 resume 命令
-        return ""
+        # 非交互模式：输出 prompt 供外部 AI 处理
+        print("\n" + "="*60)
+        print("✨ 正在准备写作内容...")
+        print("="*60)
+        print(f"\n【System】\n{system_prompt}")
+        print(f"\n【User】\n{user_prompt}")
+        print("\n" + "="*60)
+        print("\n请将生成的 JSON 内容粘贴到下方（单独一行输入 END 结束）：")
 
-    # 交互模式：输出 prompt 并等待用户输入
+        # 读取 AI 输入
+        lines = []
+        try:
+            while True:
+                line = input()
+                if line.strip() == "END":
+                    break
+                lines.append(line)
+        except EOFError:
+            from core.logger import log_error
+            log_error("EOFError: 非交互环境下无法读取输入")
+            return ""
+
+        return '\n'.join(lines)
+
+    # 交互模式：等待用户输入
     print("\n" + "="*60)
     print("[Assistant Mode] 请 AI 助手根据以下 prompt 生成内容")
     print("="*60)
@@ -56,11 +81,16 @@ def handle_assistant_mode(text, interactive=True):
     # 读取多行输入
     lines = []
     print("（输入完成后，单独一行输入 END 结束）")
-    while True:
-        line = input()
-        if line.strip() == "END":
-            break
-        lines.append(line)
+    try:
+        while True:
+            line = input()
+            if line.strip() == "END":
+                break
+            lines.append(line)
+    except EOFError:
+        from core.logger import log_error
+        log_error("EOFError: 非交互环境下无法读取输入")
+        return ""
 
     return '\n'.join(lines)
 
@@ -99,15 +129,63 @@ def handle_single_request(user_input):
         polish_article(article_id)
         return
 
-    # 自动识别素材
-    material_id = detect_and_import(user_input)
+    if user_input.lower().startswith('polish-inject '):
+        parts = user_input.split(' ', 2)
+        if len(parts) < 3:
+            print("用法: polish-inject <article_id> <json_file_path>")
+            return
+        article_id = parts[1]
+        json_file = parts[2]
+        polish_inject(article_id, json_file)
+        return
 
-    if material_id:
-        print(f"[OK] 已导入素材 ID: {material_id}")
+    if user_input.lower().startswith('sync '):
+        article_id = user_input.split(' ', 1)[1]
+        sync_article(article_id)
+        return
+
+    # 新增：save-materials 命令
+    if user_input.lower().startswith('save-materials '):
+        materials_text = user_input.split(' ', 1)[1]
+        cmd_save_materials(materials_text)
+        return
+
+    # 新增：generate 命令
+    if user_input.lower().startswith('generate '):
+        cmd_generate(user_input)
+        return
+
+    # 新增：save-article 命令
+    if user_input.lower().startswith('save-article '):
+        cmd_save_article(user_input)
+        return
+
+    # 新增：finalize 命令
+    if user_input.lower().startswith('finalize '):
+        article_id = user_input.split(' ', 1)[1]
+        cmd_finalize(article_id)
+        return
+
+    # 新增：distill-preference 命令
+    if user_input.lower().startswith('distill-preference '):
+        scenario = user_input.split(' ', 1)[1]
+        cmd_distill_preference(scenario)
+        return
+
+    # 新增：save-preference 命令
+    if user_input.lower().startswith('save-preference '):
+        cmd_save_preference(user_input)
+        return
+
+    # 自动识别素材
+    material_ids = detect_and_import(user_input)
+
+    if material_ids:
+        print(f"[OK] 已记录 {len(material_ids)} 条素材到数据库")
         print("\n您希望我怎么处理这些材料？")
         # 等待用户输入
         intent = input("> ")
-        text = generate_with_materials([material_id], intent)
+        text = generate_with_materials(material_ids, intent)
         print("\n" + "=" * 50)
         print(text)
         print("=" * 50)
@@ -187,7 +265,7 @@ def run_interactive():
             print("\n\n会话中断。输入'quit'退出。")
             continue
         except Exception as e:
-            print(f"⚠️ 发生错误：{e}")
+            print(f"[错误] 发生错误：{e}")
             continue
 
 def ask_scenario(user_input):
@@ -226,32 +304,104 @@ def ask_scenario(user_input):
 
     return scenario_type, writing_purpose
 
+def prompt_custom_prompt_interaction(scenario_type):
+    """交互式确认自定义 prompt（显示/询问修改/询问创建）"""
+    # 获取场景名称映射
+    scenario_names = {
+        'academic': '学术论文',
+        'daily_note': '日常笔记',
+        'social_media': '社交媒体',
+        'report': '工作报告',
+        'creative': '创意写作',
+        'objective': '客观描述'
+    }
+    scenario_name = scenario_names.get(scenario_type, scenario_type)
+
+    print("\n" + "=" * 60)
+    print("【自定义 Prompt 设置】")
+    print("=" * 60)
+    print(f"当前场景：{scenario_name}")
+
+    # 获取已保存的自定义 prompt
+    custom_prompt = get_custom_prompt(scenario_type)
+
+    if custom_prompt:
+        print("\n当前自定义 Prompt：")
+        print("-" * 40)
+        print(custom_prompt)
+        print("-" * 40)
+        print("\n是否修改？(修改/不修改)")
+
+        while True:
+            choice = input("> ").strip().lower()
+            if choice in ('修改', 'edit', 'change'):
+                print("\n请输入新的自定义 Prompt：")
+                new_prompt = input("> ").strip()
+                if new_prompt:
+                    save_custom_prompt(scenario_type, new_prompt)
+                    print("\n[OK] 自定义 Prompt 已更新")
+                    return new_prompt
+                else:
+                    print("\n[提示] 输入为空，保留原有 Prompt")
+                    return custom_prompt
+            elif choice in ('不修改', 'skip', 'no', '保持'):
+                print("\n[OK] 保持原有自定义 Prompt")
+                return custom_prompt
+            else:
+                print("无效选择，请输入 '修改' 或 '不修改'")
+    else:
+        print("\n当前场景未设置自定义 Prompt。")
+        print("\n是否创建？(创建/不创建)")
+
+        while True:
+            choice = input("> ").strip().lower()
+            if choice in ('创建', 'create', 'new', 'add'):
+                print("\n请输入自定义 Prompt：")
+                print("[提示] 例如：使用简洁的语言，避免复杂长句")
+                new_prompt = input("> ").strip()
+                if new_prompt:
+                    save_custom_prompt(scenario_type, new_prompt)
+                    print("\n[OK] 自定义 Prompt 已保存")
+                    return new_prompt
+                else:
+                    print("\n[提示] 输入为空，跳过创建")
+                    return None
+            elif choice in ('不创建', 'skip', 'no'):
+                print("\n[OK] 不设置自定义 Prompt")
+                return None
+            else:
+                print("无效选择，请输入 '创建' 或 '不创建'")
+
 def handle_initial_request(user_input):
     """处理初始请求"""
     global session
 
     # 尝试识别素材
-    material_id = detect_and_import(user_input)
+    material_ids = detect_and_import(user_input)
 
     # 引导用户选择场景和目的
     scenario_type, writing_purpose = ask_scenario(user_input)
 
+    # 交互式确认自定义 prompt（强制步骤）
+    custom_prompt = prompt_custom_prompt_interaction(scenario_type)
+
     print(f"\n[OK] 场景：{scenario_type} | 目的：{writing_purpose}")
 
-    if material_id:
-        print(f"\n[OK] 已识别素材 ID: {material_id}")
+    # Bug #2 修复：明确告知用户素材已保存
+    if material_ids:
+        print(f"\n✓ 已记录 {len(material_ids)} 条素材到数据库")
         intent = input("【你希望怎么写？】> ")
-        text = generate_with_materials([material_id], intent, scenario_type, writing_purpose)
+        text = generate_with_materials(material_ids, intent, scenario_type, writing_purpose, custom_prompt=custom_prompt)
         text = handle_assistant_mode(text)
     else:
         # 无素材创作
         print("\n好的，我来帮你创作。")
-        text = generate_freeform(user_input, scenario_type, writing_purpose)
+        text = generate_freeform(user_input, scenario_type, writing_purpose, custom_prompt=custom_prompt)
         text = handle_assistant_mode(text)
 
     # 保存摘要
     summary_id = save_summary(
-        [material_id] if material_id else [],
+        material_ids,
         user_input,
         text,
         scenario_type,
@@ -273,7 +423,12 @@ def handle_initial_request(user_input):
     print("=" * 60)
     print(text)
     print("=" * 60)
-    print(f"\n💾 草稿已保存：{draft_path}")
+    print(f"\n[已保存] 草稿文件：{draft_path}")
+
+    # Bug #3 修复：自动打开草稿文件
+    open_draft(draft_path)
+    print(f"[已打开] 草稿文件已在编辑器中打开")
+
     print(f"\n[提示] 接下来你可以：")
     print(f"1. 直接修改草稿文件中的内容")
     print(f"2. 在对话框中粘贴你修改后的文本")
@@ -344,7 +499,7 @@ def handle_user_edit(summary_id, session_id, ai_original, user_modified):
     if not success:
         # 编辑比例太低，提示用户
         print("\n" + "=" * 60)
-        print("⚠️  编辑比例检测")
+        print("[ ! ]  编辑比例检测")
         print("=" * 60)
         print(f"当前编辑比例：{edit_ratio:.1%}（低于阈值{EDIT_CONFIG['ratio_threshold']:.0%}）")
         print("\n你只做了少量修改/一段修改，这可能不足以代表你的写作偏好。")
@@ -400,7 +555,7 @@ def handle_user_edit(summary_id, session_id, ai_original, user_modified):
     print(f"\n[提示] {finalize_prompt}")
 
 
-def handle_polish_request(ai_original, scenario_type, writing_purpose, interactive=True):
+def handle_polish_request(ai_original, scenario_type, writing_purpose):
     """
     第二阶段：AI 提出修改意见，直接注入到草稿文件中
     格式：%%（问题：XX，建议：XX，用户反馈：）%%
@@ -409,19 +564,50 @@ def handle_polish_request(ai_original, scenario_type, writing_purpose, interacti
     from core.logger import log_info, log_debug, log_error
     global session
 
-    log_info(f"handle_polish_request 开始，interactive={interactive}")
+    log_info(f"handle_polish_request 开始")
     log_debug(f"输入文本长度: {len(ai_original)}, 场景: {scenario_type}, 目的: {writing_purpose}")
 
+    # 打磨前交互式确认自定义 prompt（强制步骤）
+    custom_prompt = prompt_custom_prompt_interaction(scenario_type)
+
     # 获取结构化建议
-    opinions, suggestions, suggestion_types = generate_revision_opinion(ai_original, scenario_type, writing_purpose)
+    opinions, suggestions, suggestion_types = generate_revision_opinion(ai_original, scenario_type, writing_purpose, custom_prompt=custom_prompt)
     log_debug(f"generate_revision_opinion 返回: opinions长度={len(opinions) if opinions else 0}, suggestions数量={len(suggestions) if suggestions else 0}")
 
     # 检查是否是 Assistant Mode（API 禁用）
     if opinions.startswith("__ASSISTANT_MODE__"):
-        # 让当前 AI 生成
-        opinions = handle_assistant_mode(opinions, interactive=interactive)
+        # 让当前 AI 生成（根据是否交互模式决定）
+        interactive = session.session_id is not None  # 有会话ID说明是交互模式
+        ai_response = handle_assistant_mode(opinions, interactive=False)  # polish命令始终非交互
 
-    log_debug(f"handle_assistant_mode 处理后: opinions长度={len(opinions) if opinions else 0}")
+        # 解析 AI 返回的 JSON
+        if ai_response:
+            import json
+            try:
+                response_data = json.loads(ai_response)
+                suggestions = response_data.get('suggestions', [])
+                log_debug(f"解析 JSON 成功，suggestions 数量: {len(suggestions)}")
+
+                # 生成 opinions 文本（用于显示）
+                opinions_lines = []
+                for i, sug in enumerate(suggestions, 1):
+                    opinions_lines.append(f"{i}. {sug.get('anchor', '全文')}")
+                    opinions_lines.append(f"   问题：{sug.get('problem', '')}")
+                    opinions_lines.append(f"   建议：{sug.get('advice', '')}")
+                opinions = '\n'.join(opinions_lines)
+
+                # 提取建议类型（暂时留空）
+                suggestion_types = "通用"
+            except json.JSONDecodeError as e:
+                log_error(f"JSON 解析失败: {e}")
+                log_error(f"AI 返回内容: {ai_response[:200]}")
+                opinions = ai_response
+                suggestions = []
+        else:
+            opinions = ""
+            suggestions = []
+
+    log_debug(f"handle_assistant_mode 处理后: opinions长度={len(opinions) if opinions else 0}, suggestions数量={len(suggestions)}")
 
     # 保存 AI 意见和类型，供用户修改后记录
     session.last_ai_opinion = opinions
@@ -625,12 +811,23 @@ def do_finalize():
     print(f"总共经过 {session.round_num} 轮修改")
     print(f"其中打磨轮次：{session.polish_round} 轮")
 
+    # 检查是否触发写作偏好萃取（全量模式）
+    total_edits = count_undistilled()  # 现在返回总数
+    conn = get_conn()
+    cursor = conn.execute('SELECT COALESCE(MAX(distilled_count), 0) FROM writing_preferences WHERE prompt_type = "writing" AND is_active = 1')
+    last_distill_count = cursor.fetchone()[0]
+    conn.close()
+
+    if should_trigger_distill(total_edits, last_distill_count):
+        print(f"\n[提示] 全量萃取：共 {total_edits} 条记录，上次萃取时 {last_distill_count} 条...")
+        do_distill_now(total_edits)
+
     # 检查是否触发用户反馈萃取
     from core.feedback_distiller import should_trigger_feedback_distill, distill_user_feedback
     from core.distiller import update_system_prompt
-    should_trigger, count = should_trigger_feedback_distill()
-    if should_trigger:
-        print(f"\n🔍 检测到 {count} 条用户反馈，正在萃取学习...")
+    should_trigger_fb, count = should_trigger_feedback_distill()
+    if should_trigger_fb:
+        print(f"\n[提示] 检测到 {count} 条用户反馈，正在萃取学习...")
         feedback_pref = distill_user_feedback()
         if feedback_pref:
             print(f"[OK] 用户反馈偏好萃取完成：\n{feedback_pref[:200]}...")
@@ -638,7 +835,7 @@ def do_finalize():
     # 检查是否触发定稿萃取
     final_count = count_final_versions()
     if should_trigger_final_distill(final_count):
-        print("\n🔍 检测到足够的定稿，正在萃取定稿特征...")
+        print("\n[提示] 检测到足够的定稿，正在萃取定稿特征...")
         do_distill_finals()
 
     # 重置会话
@@ -704,31 +901,29 @@ def do_sync_draft():
         print(revised_text)
         print("=" * 60)
 
-def do_distill_now():
-    """立即萃取偏好（支持场景化）"""
-    from core.edit_records import get_undistilled_edits, get_undistilled_edits_by_scenario, mark_as_distilled
+def do_distill_now(total_edits=0):
+    """全量萃取偏好（支持场景化）"""
+    from core.edit_records import get_all_edits_for_distill
     from core.distiller import distill_scenario_preferences
+    import uuid
 
     global session
     scenario_type = session.scenario_type
 
     # 优先使用场景化萃取
     if scenario_type:
-        print(f"\n🔍 正在萃取 {scenario_type} 场景的写作偏好...")
-        records = get_undistilled_edits_by_scenario(scenario_type, limit=10)
+        print(f"\n🔍 正在全量萃取 {scenario_type} 场景的写作偏好...")
+        records = get_all_edits_for_distill(limit=50)
         if records:
-            pref = distill_scenario_preferences(records, scenario_type)
+            pref = distill_scenario_preferences(scenario_type)
             if pref:
                 update_system_prompt(pref, prompt_type='writing', scenario_type=scenario_type)
-                mark_as_distilled()
                 print(f"[OK] 场景偏好萃取完成：{pref[:100]}...")
                 return
 
-    # 回退到通用萃取
-    conn = get_conn()
-    cursor = conn.execute('SELECT ai_original, final_text FROM edit_records WHERE is_distilled = 0 LIMIT 10')
-    records = [{'ai_original': r[0], 'final_text': r[1]} for r in cursor.fetchall()]
-    conn.close()
+    # 回退到通用萃取（全量模式）
+    print(f"\n🔍 正在全量萃取写作偏好...")
+    records = get_all_edits_for_distill(limit=50)
 
     if not records:
         print("没有需要萃取的记录")
@@ -736,9 +931,18 @@ def do_distill_now():
 
     pref = distill_preferences(records)
     if pref:
-        update_system_prompt(pref, prompt_type='writing')
-        mark_as_distilled()
-        print(f"[OK] 偏好萃取完成：{pref[:100]}...")
+        # 保存偏好并记录当前萃取的记录数
+        conn = get_conn()
+        pref_id = f"pref-{uuid.uuid4().hex[:8]}"
+        conn.execute('''
+            INSERT INTO writing_preferences (id, version, preference_summary, system_prompt, distilled_count, is_active, prompt_type)
+            VALUES (?, 1, ?, ?, ?, 1, 'writing')
+        ''', (pref_id, pref[:500], pref, total_edits))
+        # 将旧偏好设为非激活
+        conn.execute('UPDATE writing_preferences SET is_active = 0 WHERE id != ? AND prompt_type = "writing"', (pref_id,))
+        conn.commit()
+        conn.close()
+        print(f"[OK] 全量萃取完成（共 {total_edits} 条记录）：{pref[:100]}...")
 
 def do_distill_feedback():
     """立即萃取用户反馈偏好"""
@@ -747,7 +951,7 @@ def do_distill_feedback():
 
     should_trigger, count = should_trigger_feedback_distill()
     if not should_trigger:
-        print(f"\n⚠️ 当前只有 {count} 条用户反馈，至少需要 5 条才能萃取")
+        print(f"\n[提示] 当前只有 {count} 条用户反馈，至少需要 5 条才能萃取")
         return
 
     print(f"\n🔍 正在萃取 {count} 条用户反馈...")
@@ -763,12 +967,15 @@ def do_distill_feedback():
                 print(f"  - {rule}")
 
 def do_distill_finals():
-    """萃取定稿特征"""
-    finals = get_final_versions(limit=20)
+    """全量萃取定稿特征"""
+    from core.edit_records import get_final_versions_for_distill
+    from core.distiller import distill_from_final_versions
+
+    finals = get_final_versions_for_distill(limit=30)
     if not finals:
         return
 
-    pref = distill_final_versions(finals)
+    pref = distill_from_final_versions(finals)
     if pref:
         update_system_prompt(pref, prompt_type='final')
         print(f"[OK] 定稿特征萃取完成：{pref[:100]}...")
@@ -796,14 +1003,272 @@ def show_status():
     print(f"  修改轮数：{session.round_num}")
     print(f"  首轮编辑：{'已完成' if session.first_edit_done else '未完成'}")
 
+def sync_article(article_id):
+    """同步草稿文件的修改到数据库"""
+    from core.logger import log_info, log_debug
+    from core.temp_manager import read_draft, parse_user_feedback, clean_suggestions
+    from core.edit_records import save_edit_record
+    from core.revision_manager import mark_last_edit_as_final, finalize_session
+    from difflib import SequenceMatcher
+    from datetime import datetime
+    import json
+    global session
+
+    log_info(f"开始同步文章: {article_id}")
+
+    # 加载文章和会话
+    conn = get_conn()
+    article = conn.execute("SELECT * FROM summaries WHERE id=?", (article_id,)).fetchone()
+    if not article:
+        print(f"错误: 找不到文章 {article_id}")
+        sys.exit(1)
+
+    session_data = conn.execute("""
+        SELECT id FROM modification_sessions
+        WHERE summary_id=? ORDER BY session_start DESC LIMIT 1
+    """, (article_id,)).fetchone()
+
+    if not session_data:
+        session_id = start_modification_session(article_id)
+    else:
+        session_id = session_data[0]
+
+    # 获取上一次的草稿内容（从最近的 revision_round 或原始 ai_text）
+    last_round = conn.execute("""
+        SELECT user_modified FROM revision_rounds
+        WHERE session_id=? ORDER BY created_at DESC LIMIT 1
+    """, (session_id,)).fetchone()
+
+    if last_round:
+        from core.temp_manager import clean_suggestions
+        prev_text = clean_suggestions(last_round[0])
+    else:
+        prev_text = article[3]  # ai_text 字段
+
+    conn.close()
+
+    # 读取当前草稿文件
+    draft_content = read_draft(article_id)
+    if not draft_content:
+        print("错误: 草稿文件不存在")
+        sys.exit(1)
+
+    # 解析用户反馈
+    feedbacks = parse_user_feedback(draft_content)
+    log_info(f"解析到 {len(feedbacks)} 条用户反馈")
+
+    # 读取临时保存的 AI 建议
+    import os
+    draft_dir = os.path.expanduser('~/.claude/skills/ai-writer-lite/drafts')
+    temp_sugg_file = os.path.join(draft_dir, f'suggestions_{article_id}.json')
+    suggestions_raw = None
+    if os.path.exists(temp_sugg_file):
+        with open(temp_sugg_file, 'r', encoding='utf-8') as f:
+            suggestions_raw = json.load(f)
+        log_info(f"读取到 {len(suggestions_raw)} 条 AI 建议")
+
+    # 清洗建议标记，获取主文本
+    clean_text = clean_suggestions(draft_content)
+
+    # 计算编辑比例
+    edit_ratio = 1 - SequenceMatcher(None, prev_text, clean_text).ratio()
+
+    print(f"\n{'='*60}")
+    print("【同步结果】")
+    print(f"{'='*60}")
+    print(f"本次打磨建议数: {len(feedbacks)}")
+    print(f"编辑比例: {edit_ratio:.1%}")
+
+    # 显示反馈摘要
+    if feedbacks:
+        responded = sum(1 for f in feedbacks if f['responded'])
+        print(f"有效反馈: {responded}/{len(feedbacks)}")
+        print(f"\n【反馈详情】")
+        for i, fb in enumerate(feedbacks, 1):
+            if fb['responded']:
+                print(f"第 {i} 条建议: {fb['problem'][:30]}...")
+                print(f"   反馈: {fb['user_feedback'][:50]}...")
+
+    # 记录到 revision_rounds（打磨轮次）
+    conn = get_conn()
+    polish_round = conn.execute("""
+        SELECT COUNT(*) FROM revision_rounds WHERE session_id=?
+    """, (session_id,)).fetchone()[0] + 1
+
+    # 从建议中提取类型（多个类型用逗号分隔）
+    suggestion_types = set()
+    if suggestions_raw:
+        for sugg in suggestions_raw:
+            stype = sugg.get('type', '').strip()
+            if stype:
+                suggestion_types.add(stype)
+
+    suggestion_type = ','.join(sorted(suggestion_types)) if suggestion_types else "未分类"
+
+    revision_id, user_responded, _ = record_revision_round(
+        session_id=session_id,
+        round_num=polish_round,
+        ai_opinion="",
+        suggestion_type=suggestion_type,
+        user_modified=clean_text,
+        prev_text=prev_text,
+        suggestions_raw=suggestions_raw,
+        user_feedback=feedbacks
+    )
+
+    # 删除临时建议文件
+    if os.path.exists(temp_sugg_file):
+        os.remove(temp_sugg_file)
+        log_info(f"已删除临时建议文件: {temp_sugg_file}")
+
+    # 更新 modification_sessions
+    conn.execute("""
+        UPDATE modification_sessions
+        SET total_rounds=?, session_end=?
+        WHERE id=?
+    """, (polish_round, datetime.now().isoformat(), session_id))
+    conn.commit()
+    conn.close()
+
+    log_info(f"已记录 revision_round: {revision_id}")
+
+    # 保存到 edit_records（如果有实际文本修改）
+    if edit_ratio > 0.05:
+        edit_record_id = save_edit_record(article_id, prev_text, clean_text, None, session_id)
+        log_info(f"已保存 edit_record: {edit_record_id}")
+
+    print(f"\n[OK] 已同步到数据库")
+    print(f"记录 ID: {revision_id}")
+    print(f"第 {polish_round} 次打磨")
+
+    # 询问是否定稿（仅在交互模式下）
+    try:
+        print(f"\n是否定稿？(y/n): ", end='', flush=True)
+        choice = input().strip().lower()
+    except EOFError:
+        return  # 非交互模式下跳过定稿询问
+
+    if choice == 'y':
+        # 定稿处理
+        final_text = clean_text
+
+        # 保存最终版本到 edit_records（如果还没保存）
+        if edit_ratio <= 0.05:
+            edit_record_id = save_edit_record(article_id, prev_text, clean_text, None, session_id)
+            log_info(f"定稿时保存 edit_record: {edit_record_id}")
+
+        final_id = finalize_session(session_id, final_text)
+
+        print(f"\n[OK] 已定稿！ID: {final_id}")
+        print(f"共打磨 {polish_round} 次")
+
+        # 检查是否触发反馈萃取
+        from core.feedback_distiller import should_trigger_feedback_distill, distill_user_feedback
+        should_trigger, count = should_trigger_feedback_distill()
+        if should_trigger:
+            print(f"\n🔍 检测到 {count} 条用户反馈，正在萃取学习...")
+            feedback_pref = distill_user_feedback()
+            if feedback_pref:
+                print(f"[OK] 用户反馈偏好萃取完成")
+
+        # 检查是否触发定稿萃取
+        from core.distiller import should_trigger_final_distill, count_final_versions
+        final_count = count_final_versions()
+        if should_trigger_final_distill(final_count):
+            print("\n🔍 检测到足够的定稿，正在萃取定稿特征...")
+            from core.distiller import do_distill_finals
+            do_distill_finals()
+    else:
+        print("\n[提示] 可以继续修改或输入 'polish 文章ID' 进行下一轮打磨")
+
+def polish_inject(article_id, json_file):
+    """注入 AI 生成的打磨建议到草稿文件"""
+    from core.logger import log_info, log_debug, log_error
+    import json
+    import os
+
+    log_info(f"开始注入打磨建议: article_id={article_id}, json_file={json_file}")
+
+    # 读取 JSON 文件
+    if not os.path.exists(json_file):
+        print(f"错误: JSON 文件不存在: {json_file}")
+        sys.exit(1)
+
+    with open(json_file, 'r', encoding='utf-8') as f:
+        try:
+            data = json.load(f)
+            suggestions = data.get('suggestions', [])
+            log_info(f"成功读取 JSON，建议数量: {len(suggestions)}")
+        except json.JSONDecodeError as e:
+            log_error(f"JSON 解析失败: {e}")
+            print(f"错误: JSON 格式不正确: {e}")
+            sys.exit(1)
+
+    # 查找草稿文件
+    draft_dir = os.path.expanduser('~/.claude/skills/ai-writer-lite/drafts')
+    parts = article_id.split('_', 1)
+    possible_names = [
+        f"draft_{article_id}.md",
+        f"draft_{parts[1]}_{parts[0]}.md" if len(parts) == 2 else None
+    ]
+
+    draft_file = None
+    for name in possible_names:
+        if name:
+            path = os.path.normpath(os.path.join(draft_dir, name))
+            if os.path.exists(path):
+                draft_file = path
+                break
+
+    if not draft_file:
+        print(f"错误: 找不到草稿文件")
+        sys.exit(1)
+
+    # 读取草稿内容
+    with open(draft_file, 'r', encoding='utf-8') as f:
+        current_draft = f.read()
+
+    # 清理旧建议并注入新建议
+    from core.temp_manager import clean_suggestions, inject_suggestions
+    clean_draft = clean_suggestions(current_draft)
+    updated_draft = inject_suggestions(clean_draft, suggestions)
+
+    # 保存回文件
+    with open(draft_file, 'w', encoding='utf-8') as f:
+        f.write(updated_draft)
+
+    log_info(f"建议已注入到草稿文件: {draft_file}")
+
+    # 保存建议到临时文件供 sync 使用
+    temp_sugg_file = os.path.join(draft_dir, f'suggestions_{article_id}.json')
+    with open(temp_sugg_file, 'w', encoding='utf-8') as f:
+        json.dump(suggestions, f, ensure_ascii=False, indent=2)
+    log_info(f"建议已保存到临时文件: {temp_sugg_file}")
+
+    # 打开文件
+    from core.temp_manager import open_draft
+    open_draft(article_id)
+
+    print("\n" + "=" * 60)
+    print("【打磨建议注入完成】")
+    print("=" * 60)
+    print(f"建议数量: {len(suggestions)}")
+    print(f"草稿文件: {draft_file}")
+    print("\n[OK] 草稿文件已打开，请在编辑器中修改")
+    print("\n【使用说明】")
+    print("1. 在文中找到 %%...%% 标记的建议（紧跟在对应段落后）")
+    print("2. 直接在文中修改，或在 '用户反馈：' 后填写想法")
+    print("3. 修改完成后保存文件")
+    print("4. [注意] 定稿时 %%...%% 内容会自动移除，无需手动删除！")
+
 def polish_article(article_id):
-    """非交互式打磨文章"""
+    """非交互式打磨文章 - 输出 prompt 后退出"""
     from core.logger import log_info, log_debug, log_error
     global session
 
     log_info(f"开始打磨文章: {article_id}")
 
-    # 加载文章（复用 resume_article 的逻辑）
+    # 加载文章
     conn = get_conn()
     article = conn.execute("SELECT * FROM summaries WHERE id=?", (article_id,)).fetchone()
 
@@ -811,13 +1276,12 @@ def polish_article(article_id):
         conn.close()
         log_error(f"找不到文章: {article_id}")
         print(f"找不到文章: {article_id}")
-        return
+        sys.exit(1)
 
     log_debug(f"文章加载成功，场景类型: {article[7] if len(article) > 7 else None}")
 
-    session.summary_id = article_id
-    session.scenario_type = article[7] if len(article) > 7 else None
-    session.writing_purpose = article[8] if len(article) > 8 else None
+    scenario_type = article[7] if len(article) > 7 else None
+    writing_purpose = article[8] if len(article) > 8 else None
 
     # 加载会话状态
     session_data = conn.execute("""
@@ -829,16 +1293,9 @@ def polish_article(article_id):
     """, (article_id,)).fetchone()
 
     if session_data:
-        session.session_id = session_data[2]
-        session.is_finalized = bool(session_data[1])
-        actual_rounds = conn.execute("""
-            SELECT COUNT(DISTINCT strftime('%Y-%m-%d %H:%M', created_at))
-            FROM revision_rounds WHERE session_id=?
-        """, (session.session_id,)).fetchone()[0]
-        session.polish_round = actual_rounds
+        session_id = session_data[2]
     else:
-        session.polish_round = 0
-        session.is_finalized = False
+        session_id = start_modification_session(article_id)
 
     conn.close()
 
@@ -865,7 +1322,7 @@ def polish_article(article_id):
     if not draft_file:
         log_error(f"找不到草稿文件，article_id={article_id}")
         print(f"找不到草稿文件")
-        return
+        sys.exit(1)
 
     with open(draft_file, 'r', encoding='utf-8') as f:
         ai_original = f.read()
@@ -873,23 +1330,34 @@ def polish_article(article_id):
     log_debug(f"草稿文件读取成功，长度: {len(ai_original)} 字符")
 
     # 清理旧的打磨建议
-    from core.temp_manager import clean_suggestions, open_draft, inject_suggestions
-    import os
-
-    log_info("开始清理旧的打磨建议")
+    from core.temp_manager import clean_suggestions
     cleaned_original = clean_suggestions(ai_original)
     log_debug(f"清理前长度: {len(ai_original)}, 清理后长度: {len(cleaned_original)}")
-    ai_original = cleaned_original
 
-    # 更新 session 状态
-    session.ai_original = ai_original
+    # 获取场景的自定义 prompt
+    custom_prompt = get_custom_prompt(scenario_type)
 
-    # 调用 handle_polish_request（非交互模式）
-    print(f"\n正在为文章生成打磨建议...")
-    log_info("调用 handle_polish_request 生成打磨建议")
+    # 生成 prompt
+    from core.generator import generate_revision_opinion
+    prompt_text, _, _ = generate_revision_opinion(cleaned_original, scenario_type, writing_purpose, custom_prompt=custom_prompt)
 
-    handle_polish_request(ai_original, session.scenario_type, session.writing_purpose, interactive=False)
-    log_info("polish_article 执行完成")
+    # 解析并输出 prompt
+    lines = prompt_text.split('\n', 2)
+    system_prompt = lines[1].replace("SYSTEM: ", "")
+    user_prompt = lines[2].replace("USER: ", "")
+
+    print("\n" + "="*60)
+    print("[AI 请求] 请根据以下 prompt 生成 JSON 格式的打磨建议")
+    print("="*60)
+    print(f"\n【System】\n{system_prompt}")
+    print(f"\n【User】\n{user_prompt}")
+    print("\n" + "="*60)
+    print(f"\n[提示] 请将生成的 JSON 保存到文件，然后运行：")
+    print(f"  python main.py \"polish-inject {article_id} <json_file_path>\"")
+    print("="*60)
+
+    log_info("polish_article 输出 prompt 完成，退出")
+    sys.exit(99)
 
 def list_all_articles():
     """列出所有文章"""
@@ -1028,6 +1496,130 @@ def show_help():
 - 不同写作场景的偏好独立学习
 - 定稿时 %%...%% 内容会自动移除，无需手动删除
 """)
+
+def cmd_save_materials(materials_text):
+    """命令：保存素材"""
+    from core.db import get_conn
+
+    # 检测重复
+    conn = get_conn()
+    note_ids = re.findall(r'笔记_(\w+)', materials_text)
+    duplicates = []
+    for nid in note_ids:
+        cursor = conn.execute('SELECT id FROM materials WHERE note_id = ?', (nid,))
+        if cursor.fetchone():
+            duplicates.append(nid)
+    conn.close()
+
+    material_ids = detect_and_import(materials_text)
+    if material_ids:
+        print(f"[OK] 已保存 {len(material_ids)} 条素材")
+        print(f"[MATERIAL_IDS] {','.join(material_ids)}")
+        if duplicates:
+            print(f"[WARNING] 检测到 {len(duplicates)} 条重复素材已跳过: {', '.join(duplicates)}")
+    else:
+        print("[错误] 未识别到有效素材")
+
+def cmd_generate(user_input):
+    """命令：生成文章"""
+    import json
+    parts = user_input.split(' ', 1)[1]
+    try:
+        params = json.loads(parts)
+        material_ids = params.get('material_ids', [])
+        scenario = params.get('scenario', 'daily_note')
+        purpose = params.get('purpose', '')
+        intent = params.get('intent', '')
+
+        # 获取场景的自定义 prompt
+        custom_prompt = get_custom_prompt(scenario)
+
+        prompt = generate_with_materials(material_ids, intent, scenario, purpose, custom_prompt=custom_prompt)
+        result = handle_assistant_mode(prompt, interactive=False)
+        print(result)
+    except json.JSONDecodeError:
+        print("[错误] 参数格式错误，需要 JSON 格式")
+        print('用法: generate \'{"material_ids":["mat-xxx"],"scenario":"social_media","purpose":"阐述观点","intent":"写文章"}\'')
+
+def cmd_save_article(user_input):
+    """命令：保存文章"""
+    import json
+    parts = user_input.split(' ', 1)[1]
+    try:
+        params = json.loads(parts)
+        material_ids = params.get('material_ids', [])
+        scenario = params.get('scenario', 'daily_note')
+        purpose = params.get('purpose', '')
+        content = params.get('content', '')
+        ai_model = params.get('ai_model')  # 可选，如果不提供则自动提取
+
+        # 如果没有传入 ai_model，尝试从内容中提取
+        if not ai_model:
+            ai_model = extract_ai_model(content)
+
+        summary_id = save_summary(material_ids, purpose, content, scenario, purpose, ai_model)
+        draft_path = create_draft(summary_id, content)
+        open_draft(summary_id)
+
+        print(f"[OK] 文章已保存")
+        if ai_model:
+            print(f"[AI_MODEL] {ai_model}")
+        print(f"[SUMMARY_ID] {summary_id}")
+        print(f"[DRAFT_PATH] {draft_path}")
+    except json.JSONDecodeError:
+        print("[错误] 参数格式错误，需要 JSON 格式")
+
+def cmd_finalize(summary_id):
+    """命令：定稿文章"""
+    mark_last_edit_as_final(summary_id)
+
+    # 获取场景信息
+    conn = get_conn()
+    cursor = conn.execute('SELECT scenario_type FROM summaries WHERE id = ?', (summary_id,))
+    row = cursor.fetchone()
+    scenario_type = row[0] if row else None
+
+    # 获取该场景上次萃取后的新增记录数
+    cursor = conn.execute('''
+        SELECT COUNT(*) FROM edit_records e
+        JOIN summaries s ON e.summary_id = s.id
+        WHERE s.scenario_type = ?
+    ''', (scenario_type,))
+    scenario_total = cursor.fetchone()[0]
+
+    cursor = conn.execute(
+        'SELECT COUNT(*) FROM system_prompts WHERE prompt_type = ?',
+        (f'scenario_{scenario_type}',)
+    )
+    scenario_distilled = cursor.fetchone()[0]
+    conn.close()
+
+    print(f"[OK] 文章已定稿：{summary_id}")
+
+    if should_trigger_distill(scenario_total, scenario_distilled):
+        cmd_distill_preference(scenario_type)
+
+def cmd_distill_preference(scenario_type):
+    """命令：萃取偏好（全量模式）"""
+    from core.distiller import distill_scenario_preferences
+
+    pref = distill_scenario_preferences(scenario_type)
+    if not pref:
+        print("[错误] 无法生成偏好 prompt")
+        return
+
+    print(pref)
+
+def cmd_save_preference(user_input):
+    """命令：保存偏好"""
+    import json
+    parts = user_input.split(' ', 1)[1]
+    params = json.loads(parts)
+    preference_text = params.get('preference', '')
+    scenario_type = params.get('scenario', None)
+
+    update_system_prompt(preference_text, prompt_type='writing', scenario_type=scenario_type)
+    print(f"[OK] 偏好已保存")
 
 if __name__ == '__main__':
     main()

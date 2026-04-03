@@ -1,0 +1,20 @@
+[
+  {
+    "problem": "段落6太模糊",
+    "advice": "补充具体例子",
+    "user_feedback": "好的",
+    "responded": true
+  },
+  {
+    "problem": "段落10的转义符号显示异常",
+    "advice": "把反斜杠*改为**",
+    "user_feedback": "",
+    "responded": false
+  },
+  {
+    "problem": "段落12的嵌套**符号有问题",
+    "advice": "删除外层**",
+    "user_feedback": "",
+    "responded": false
+  }
+]

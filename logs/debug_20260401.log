@@ -1,0 +1,18 @@
+2026-04-01 00:21:33,152 [INFO] 非交互模式，输出 prompt 供外部 AI 处理
+2026-04-01 00:21:33,152 [ERROR] EOFError: 非交互环境下无法读取输入
+2026-04-01 00:28:03,543 [INFO] 非交互模式，输出 prompt 供外部 AI 处理
+2026-04-01 00:28:03,544 [ERROR] EOFError: 非交互环境下无法读取输入
+2026-04-01 00:31:23,443 [INFO] open_draft: 尝试打开文件 C:\Users\Edward Snow/.claude/skills/ai-writer-lite/drafts\draft_7fafc0d3.md
+2026-04-01 00:31:23,613 [INFO] 文件已打开：C:\Users\Edward Snow/.claude/skills/ai-writer-lite/drafts\draft_7fafc0d3.md
+2026-04-01 22:30:18,585 [INFO] 非交互模式，输出 prompt 供外部 AI 处理
+2026-04-01 22:30:18,586 [ERROR] EOFError: 非交互环境下无法读取输入
+2026-04-01 22:31:48,083 [INFO] open_draft: 尝试打开文件 C:\Users\Edward Snow/.claude/skills/ai-writer-lite/drafts\draft_b4168cc0.md
+2026-04-01 22:31:48,231 [INFO] 文件已打开：C:\Users\Edward Snow/.claude/skills/ai-writer-lite/drafts\draft_b4168cc0.md
+2026-04-01 23:04:19,353 [INFO] 非交互模式，输出 prompt 供外部 AI 处理
+2026-04-01 23:04:19,355 [ERROR] EOFError: 非交互环境下无法读取输入
+2026-04-01 23:09:08,564 [INFO] 非交互模式，输出 prompt 供外部 AI 处理
+2026-04-01 23:09:08,565 [ERROR] EOFError: 非交互环境下无法读取输入
+2026-04-01 23:29:05,789 [INFO] 非交互模式，输出 prompt 供外部 AI 处理
+2026-04-01 23:29:05,791 [ERROR] EOFError: 非交互环境下无法读取输入
+2026-04-01 23:29:48,258 [INFO] open_draft: 尝试打开文件 C:\Users\Edward Snow/.claude/skills/ai-writer-lite/drafts\draft_b34862e6.md
+2026-04-01 23:29:48,522 [INFO] 文件已打开：C:\Users\Edward Snow/.claude/skills/ai-writer-lite/drafts\draft_b34862e6.md

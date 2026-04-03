@@ -4,6 +4,6 @@
 
 # 编辑配置
 EDIT_CONFIG = {
-    'ratio_threshold': 0.3,  # 30%
+    'ratio_threshold': 0.15,  # 15%
 }
 
